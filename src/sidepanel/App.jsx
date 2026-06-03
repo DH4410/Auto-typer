@@ -4,7 +4,8 @@ import styles from "./App.module.css";
 const DEFAULT_SETTINGS = {
   wpm: 65,
   randomnessMs: 45,
-  errorRate: 2
+  errorRate: 2,
+  falseStartRate: 1.2
 };
 
 const EMPTY_STATUS = {
@@ -180,6 +181,15 @@ export default function App() {
           step={0.5}
           suffix="%"
           onChange={(value) => updateSetting("errorRate", value)}
+        />
+        <SliderRow
+          label="False start chance"
+          value={settings.falseStartRate}
+          min={0}
+          max={5}
+          step={0.1}
+          suffix="%"
+          onChange={(value) => updateSetting("falseStartRate", value)}
         />
       </section>
 

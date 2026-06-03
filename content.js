@@ -10,7 +10,8 @@ const MESSAGE = {
 const DEFAULT_SETTINGS = {
   wpm: 65,
   randomnessMs: 45,
-  errorRate: 2
+  errorRate: 2,
+  falseStartRate: 1.2
 };
 
 const KEY_NEIGHBORS = {
@@ -49,6 +50,8 @@ let state = {
   currentChar: "",
   settings: { ...DEFAULT_SETTINGS },
   taskId: 0,
+  falseStartsUsed: 0,
+  falseStartLimit: 2,
   lastError: ""
 };
 
@@ -112,6 +115,8 @@ async function startTyping(payload = {}) {
     currentChar: "",
     settings: sanitizeSettings(payload.settings),
     taskId: state.taskId + 1,
+    falseStartsUsed: 0,
+    falseStartLimit: falseStartLimitFor(text),
     lastError: ""
   };
 
@@ -142,6 +147,11 @@ async function runTypingLoop(taskId) {
 
     state.index += 1;
     sendStatus("Running");
+
+    if (shouldDoFalseStart(char)) {
+      await typeFalseStartThenDelete(taskId);
+    }
+
     await humanDelayFor(char, taskId);
   }
 
@@ -164,6 +174,36 @@ async function typeTypoThenCorrect(correctChar, taskId) {
   await pressBackspace();
   await controlledSleep(randomBetween(140, 420), taskId);
   await typeCharacter(correctChar);
+}
+
+async function typeFalseStartThenDelete(taskId) {
+  const phrase = nextFalseStartPhrase();
+  if (!phrase) return;
+
+  state.falseStartsUsed += 1;
+
+  await controlledSleep(randomBetween(360, 900), taskId);
+
+  for (const char of phrase) {
+    await waitWhilePausedOrStopped(taskId);
+    state.currentChar = char;
+    await typeCharacter(char);
+    sendStatus("Revising");
+    await humanDelayFor(char, taskId);
+  }
+
+  await controlledSleep(randomBetween(700, 1800), taskId);
+
+  for (let i = phrase.length - 1; i >= 0; i -= 1) {
+    await waitWhilePausedOrStopped(taskId);
+    state.currentChar = "Backspace";
+    await pressBackspace();
+    sendStatus("Deleting false start");
+    await controlledSleep(randomBetween(35, 95), taskId);
+  }
+
+  state.currentChar = "";
+  await controlledSleep(randomBetween(350, 1000), taskId);
 }
 
 function findEditableTarget() {
@@ -360,12 +400,43 @@ function sanitizeSettings(settings = {}) {
   const wpm = Number(settings.wpm);
   const randomnessMs = Number(settings.randomnessMs);
   const errorRate = Number(settings.errorRate);
+  const falseStartRate = Number(settings.falseStartRate);
 
   return {
     wpm: clamp(Number.isFinite(wpm) ? wpm : DEFAULT_SETTINGS.wpm, 20, 140),
     randomnessMs: clamp(Number.isFinite(randomnessMs) ? randomnessMs : DEFAULT_SETTINGS.randomnessMs, 0, 150),
-    errorRate: clamp(Number.isFinite(errorRate) ? errorRate : 0, 0, 15)
+    errorRate: clamp(Number.isFinite(errorRate) ? errorRate : 0, 0, 15),
+    falseStartRate: clamp(Number.isFinite(falseStartRate) ? falseStartRate : DEFAULT_SETTINGS.falseStartRate, 0, 5)
   };
+}
+
+function falseStartLimitFor(text) {
+  if (text.length < 220) return 1;
+  if (text.length < 900) return 2;
+  return 3;
+}
+
+function shouldDoFalseStart(char) {
+  if (char !== " ") return false;
+  if (state.falseStartsUsed >= state.falseStartLimit) return false;
+  if (state.settings.falseStartRate <= 0) return false;
+  if (state.index < 24 || state.text.length - state.index < 35) return false;
+  if (/[.!?\n]\s*$/.test(state.text.slice(Math.max(0, state.index - 3), state.index + 1))) return false;
+
+  return Math.random() < state.settings.falseStartRate / 100;
+}
+
+function nextFalseStartPhrase() {
+  const upcoming = state.text.slice(state.index).trimStart();
+  const matches = upcoming.match(/[\w'-]+[,.!?;:]?/g);
+  if (!matches || matches.length < 2) return "";
+
+  const count = Math.min(matches.length, Math.floor(randomBetween(2, 5)));
+  const words = matches.slice(0, count);
+  const phrase = `${words.join(" ")} `;
+
+  if (phrase.length > 42 || /[\n\r]/.test(phrase)) return "";
+  return phrase;
 }
 
 function baseDelayMs() {
