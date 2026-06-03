@@ -5,7 +5,8 @@ const DEFAULT_SETTINGS = {
   wpm: 65,
   randomnessMs: 45,
   errorRate: 2,
-  falseStartRate: 1.2
+  falseStartRate: 1.2,
+  handsFreeControls: true
 };
 
 const EMPTY_STATUS = {
@@ -21,6 +22,8 @@ export default function App() {
   const [text, setText] = useState("");
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [typingStatus, setTypingStatus] = useState(EMPTY_STATUS);
+  const [sessionTabId, setSessionTabId] = useState(null);
+  const [now, setNow] = useState(Date.now());
   const [notice, setNotice] = useState("");
 
   const wordCount = useMemo(() => {
@@ -35,11 +38,25 @@ export default function App() {
   const isRunning = typingStatus.status === "running";
   const isPaused = typingStatus.status === "paused";
   const canStart = text.trim().length > 0 && !isRunning && !isPaused;
+  const estimate = useMemo(() => {
+    const sourceText = typingStatus.status === "running" || typingStatus.status === "paused"
+      ? text.slice(Math.min(typingStatus.index, text.length))
+      : text;
+    const totalMs = estimateTypingDurationMs(text, settings);
+    const remainingMs = estimateTypingDurationMs(sourceText, settings);
+
+    return {
+      totalMs,
+      remainingMs,
+      finishAt: now + remainingMs
+    };
+  }, [now, settings, text, typingStatus.index, typingStatus.status]);
 
   useEffect(() => {
     const listener = (message) => {
       if (message?.type === "HDT_STATUS_BROADCAST" || message?.type === "HDT_STATUS") {
         setTypingStatus((current) => ({ ...current, ...message.payload }));
+        if (message.payload?.tabId) setSessionTabId(message.payload.tabId);
       }
     };
 
@@ -47,30 +64,39 @@ export default function App() {
     chrome.runtime.sendMessage({ type: "HDT_GET_BACKGROUND_STATUS" }, (response) => {
       if (response?.ok && response.payload) {
         setTypingStatus((current) => ({ ...current, ...response.payload }));
+        if (response.payload.tabId) setSessionTabId(response.payload.tabId);
       }
     });
 
     return () => chrome.runtime.onMessage.removeListener(listener);
   }, []);
 
-  const sendToActiveDoc = useCallback(async (type, payload = {}) => {
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 15000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const sendToDoc = useCallback(async (type, payload = {}) => {
     setNotice("");
 
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id) {
-      throw new Error("No active tab found.");
-    }
+    const activeDocTabId = tab?.url?.startsWith("https://docs.google.com/") ? tab.id : null;
+    const targetTabId = type === "HDT_START"
+      ? activeDocTabId
+      : activeDocTabId || (settings.handsFreeControls ? sessionTabId : null);
 
-    if (!tab.url?.startsWith("https://docs.google.com/")) {
+    if (!targetTabId) {
       throw new Error("Open a Google Docs document and place the cursor where typing should start.");
     }
 
-    return chrome.tabs.sendMessage(tab.id, { type, payload }, { frameId: 0 });
-  }, []);
+    const response = await chrome.tabs.sendMessage(targetTabId, { type, payload }, { frameId: 0 });
+    setSessionTabId(targetTabId);
+    return response;
+  }, [sessionTabId, settings.handsFreeControls]);
 
   const runCommand = useCallback(async (type, payload) => {
     try {
-      const response = await sendToActiveDoc(type, payload);
+      const response = await sendToDoc(type, payload);
       if (response?.state) {
         setTypingStatus((current) => ({ ...current, ...response.state }));
       }
@@ -79,12 +105,12 @@ export default function App() {
       const message = normalizeChromeError(error);
       setNotice(message);
     }
-  }, [sendToActiveDoc]);
+  }, [sendToDoc]);
 
   const updateSetting = (key, value) => {
     setSettings((current) => ({
       ...current,
-      [key]: Number(value)
+      [key]: typeof value === "boolean" ? value : Number(value)
     }));
   };
 
@@ -153,6 +179,21 @@ export default function App() {
         </div>
       </section>
 
+      <section className={styles.estimatePanel}>
+        <div>
+          <span>Estimated total</span>
+          <strong>{formatDuration(estimate.totalMs)}</strong>
+        </div>
+        <div>
+          <span>Remaining</span>
+          <strong>{formatDuration(estimate.remainingMs)}</strong>
+        </div>
+        <div>
+          <span>Finish time</span>
+          <strong>{formatClock(estimate.finishAt)}</strong>
+        </div>
+      </section>
+
       <section className={styles.settings}>
         <h2>Settings</h2>
         <SliderRow
@@ -191,6 +232,17 @@ export default function App() {
           suffix="%"
           onChange={(value) => updateSetting("falseStartRate", value)}
         />
+        <label className={styles.toggleRow}>
+          <span>
+            <span>Hands-free controls</span>
+            <small>Keep session controls tied to the started Docs tab.</small>
+          </span>
+          <input
+            type="checkbox"
+            checked={settings.handsFreeControls}
+            onChange={(event) => updateSetting("handsFreeControls", event.target.checked)}
+          />
+        </label>
       </section>
 
       {notice && <p className={styles.notice}>{notice}</p>}
@@ -233,4 +285,54 @@ function normalizeChromeError(error) {
     return "Reload the Google Docs tab, click inside the document, then try again.";
   }
   return raw;
+}
+
+function estimateTypingDurationMs(text, settings) {
+  if (!text) return 0;
+
+  const baseDelay = 60000 / (settings.wpm * 5);
+  const punctuationPauses = (text.match(/[.!?;:]/g) || []).length * 910;
+  const commaPauses = (text.match(/,/g) || []).length * 350;
+  const lineBreakPauses = (text.match(/\n/g) || []).length * 1550;
+  const thinkingPauses = (text.match(/ /g) || []).length * 0.04 * 575;
+  const typoCharacters = (text.match(/[a-z]/gi) || []).length * (settings.errorRate / 100);
+  const typoCorrectionCost = typoCharacters * (baseDelay + 620);
+  const falseStartCost = estimateFalseStartCost(text, settings, baseDelay);
+
+  return Math.max(0, text.length * baseDelay + punctuationPauses + commaPauses + lineBreakPauses + thinkingPauses + typoCorrectionCost + falseStartCost);
+}
+
+function estimateFalseStartCost(text, settings, baseDelay) {
+  if (!settings.falseStartRate || text.length < 60) return 0;
+
+  const spaces = (text.match(/ /g) || []).length;
+  const maxFalseStarts = text.length < 220 ? 1 : text.length < 900 ? 2 : 3;
+  const expectedFalseStarts = Math.min(maxFalseStarts, spaces * (settings.falseStartRate / 100));
+  const averagePhraseChars = 24;
+  const typeAndDeleteCost = averagePhraseChars * (baseDelay + 65);
+  const reconsiderPauses = 2400;
+
+  return expectedFalseStarts * (typeAndDeleteCost + reconsiderPauses);
+}
+
+function formatDuration(ms) {
+  if (!ms) return "0 min";
+
+  const totalSeconds = Math.max(1, Math.round(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
+  return `${seconds}s`;
+}
+
+function formatClock(timestamp) {
+  if (!timestamp) return "--:--";
+
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(new Date(timestamp));
 }

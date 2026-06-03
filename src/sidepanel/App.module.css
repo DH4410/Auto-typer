@@ -68,6 +68,7 @@
 
 .editorSection,
 .statusPanel,
+.estimatePanel,
 .settings {
   display: flex;
   flex-direction: column;
@@ -166,18 +167,52 @@ button:disabled {
   transition: width 160ms ease;
 }
 
+.estimatePanel {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.estimatePanel div {
+  min-width: 0;
+  border: 1px solid #dfe4ec;
+  border-radius: 8px;
+  padding: 10px;
+  background: #ffffff;
+}
+
+.estimatePanel span,
+.toggleRow small {
+  display: block;
+  color: #5f6368;
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.estimatePanel strong {
+  display: block;
+  overflow-wrap: anywhere;
+  margin-top: 5px;
+  color: #202124;
+  font-size: 13px;
+}
+
 .settings {
   padding-top: 2px;
 }
 
-.sliderRow {
+.sliderRow,
+.toggleRow {
   display: flex;
-  flex-direction: column;
   gap: 8px;
   padding: 12px;
   border: 1px solid #dfe4ec;
   border-radius: 8px;
   background: #ffffff;
+}
+
+.sliderRow {
+  flex-direction: column;
 }
 
 .sliderLabel {
@@ -194,6 +229,26 @@ button:disabled {
 
 input[type="range"] {
   width: 100%;
+  accent-color: #2f6fdb;
+}
+
+.toggleRow {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.toggleRow > span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.toggleRow input {
+  width: 18px;
+  height: 18px;
   accent-color: #2f6fdb;
 }
 
