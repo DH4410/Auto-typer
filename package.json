@@ -1,6 +1,6 @@
 {
   "name": "human-doc-typer",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "private": true,
   "description": "Manifest V3 Chrome extension side panel that simulates human-like typing in Google Docs.",
   "type": "module",
