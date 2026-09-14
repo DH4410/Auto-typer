@@ -52,8 +52,15 @@ let state = {
   taskId: 0,
   falseStartsUsed: 0,
   falseStartLimit: 2,
-  lastError: ""
+  lastError: "",
+  safetyPaused: false,
+  safetyReason: ""
 };
+
+let typingTarget = null;
+let typingCheckpoint = null;
+
+installSafetyGuards();
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || typeof message.type !== "string") return false;
@@ -71,6 +78,27 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === MESSAGE.RESUME) {
+    if (state.status === "paused" && state.safetyPaused) {
+      const target = activeEditableTarget();
+      if (!target) {
+        const error = "Safety pause: click the exact place in the Google Doc where typing should continue, then press Resume again.";
+        state.lastError = error;
+        sendStatus(error);
+        sendResponse({ ok: false, error, state: publicState() });
+        return false;
+      }
+
+      typingTarget = target;
+      typingCheckpoint = captureTypingCheckpoint(target);
+      state.safetyPaused = false;
+      state.safetyReason = "";
+      state.lastError = "";
+      state.status = "running";
+      sendStatus("Running — safety guard re-anchored");
+      sendResponse({ ok: true, state: publicState() });
+      return false;
+    }
+
     if (state.status === "paused") state.status = "running";
     sendStatus("Running");
     sendResponse({ ok: true, state: publicState() });
@@ -80,6 +108,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === MESSAGE.STOP) {
     state.status = "stopped";
     state.taskId += 1;
+    state.safetyPaused = false;
+    state.safetyReason = "";
+    typingTarget = null;
+    typingCheckpoint = null;
     sendStatus("Stopped");
     sendResponse({ ok: true, state: publicState() });
     return false;
@@ -117,8 +149,13 @@ async function startTyping(payload = {}) {
     taskId: state.taskId + 1,
     falseStartsUsed: 0,
     falseStartLimit: falseStartLimitFor(text),
-    lastError: ""
+    lastError: "",
+    safetyPaused: false,
+    safetyReason: ""
   };
+
+  typingTarget = target;
+  typingCheckpoint = captureTypingCheckpoint(target);
 
   sendStatus("Starting");
   runTypingLoop(state.taskId).catch((error) => {
@@ -136,6 +173,11 @@ async function runTypingLoop(taskId) {
     await waitWhilePausedOrStopped(taskId);
     if (state.status !== "running" || taskId !== state.taskId) break;
 
+    if (!validateTypingContext()) {
+      await waitWhilePausedOrStopped(taskId);
+      if (state.status !== "running" || taskId !== state.taskId) continue;
+    }
+
     const char = nextCharacter(state.text, state.index);
     state.currentChar = char;
 
@@ -146,6 +188,7 @@ async function runTypingLoop(taskId) {
     }
 
     state.index += char.length;
+    typingCheckpoint = captureTypingCheckpoint(typingTarget);
     sendStatus("Running");
 
     if (shouldDoFalseStart(char)) {
@@ -289,8 +332,11 @@ function isEditable(element) {
 }
 
 async function typeCharacter(char) {
-  const target = findEditableTarget();
-  if (!target) throw new Error("Could not find an editable Google Docs target.");
+  const target = typingTarget;
+  if (!target || !target.isConnected) {
+    triggerSafetyPause("The Google Docs typing target changed or was removed.");
+    throw safetyAbortError();
+  }
 
   if (char === "\n") {
     dispatchKey(target, "Enter", {
@@ -315,8 +361,11 @@ async function typeCharacter(char) {
 }
 
 async function pressBackspace() {
-  const target = findEditableTarget();
-  if (!target) throw new Error("Could not find an editable Google Docs target.");
+  const target = typingTarget;
+  if (!target || !target.isConnected) {
+    triggerSafetyPause("The Google Docs typing target changed or was removed.");
+    throw safetyAbortError();
+  }
 
   dispatchKey(target, "Backspace", {
     code: "Backspace",
@@ -600,6 +649,137 @@ function keyboardInfoForChar(char) {
   };
 }
 
+
+function installSafetyGuards() {
+  const pauseForUserInteraction = (event) => {
+    if (state.status !== "running" || !event.isTrusted) return;
+    triggerSafetyPause("You interacted with the document while typing.");
+  };
+
+  document.addEventListener("pointerdown", pauseForUserInteraction, true);
+  document.addEventListener("mousedown", pauseForUserInteraction, true);
+  document.addEventListener("touchstart", pauseForUserInteraction, true);
+  document.addEventListener("keydown", pauseForUserInteraction, true);
+
+  document.addEventListener("visibilitychange", () => {
+    if (state.status === "running" && document.visibilityState === "hidden") {
+      triggerSafetyPause("The Google Docs tab was hidden or changed.");
+    }
+  });
+}
+
+function activeEditableTarget() {
+  const active = deepActiveElement(document);
+  return isEditable(active) ? active : null;
+}
+
+function validateTypingContext() {
+  if (state.status !== "running") return false;
+
+  if (!typingTarget || !typingTarget.isConnected) {
+    triggerSafetyPause("The Google Docs typing target changed or was removed.");
+    return false;
+  }
+
+  const active = activeEditableTarget();
+  if (active !== typingTarget) {
+    triggerSafetyPause("The document cursor or input focus moved.");
+    return false;
+  }
+
+  if (!checkpointMatches(typingTarget, typingCheckpoint)) {
+    triggerSafetyPause("The text or caret immediately before the typing point changed.");
+    return false;
+  }
+
+  return true;
+}
+
+function triggerSafetyPause(reason) {
+  if (state.status !== "running") return;
+
+  state.status = "paused";
+  state.safetyPaused = true;
+  state.safetyReason = reason;
+  state.lastError = "";
+  sendStatus(`Safety pause: ${reason} Click the intended typing position and press Resume.`);
+}
+
+function safetyAbortError() {
+  const error = new Error("Safety pause");
+  error.name = "AbortError";
+  return error;
+}
+
+function captureTypingCheckpoint(target) {
+  if (!target) return null;
+
+  // Google Docs' hidden text-event textarea is frequently cleared/recycled by
+  // Docs itself, so comparing its value causes false alarms. Trusted mouse/key
+  // interaction and target identity still protect this case.
+  if (target.matches?.("textarea.docs-texteventtarget, textarea.docs-texteventtarget-iframe")) {
+    return { kind: "docs-text-event-target" };
+  }
+
+  if ("selectionStart" in target && "selectionEnd" in target && typeof target.value === "string") {
+    const start = target.selectionStart ?? 0;
+    const end = target.selectionEnd ?? start;
+    return {
+      kind: "text-control",
+      start,
+      end,
+      before: target.value.slice(Math.max(0, start - 80), start)
+    };
+  }
+
+  if (target.isContentEditable) {
+    const selection = target.ownerDocument?.getSelection?.();
+    if (!selection || !selection.rangeCount) return { kind: "contenteditable-unreadable" };
+
+    const range = selection.getRangeAt(0);
+    if (!target.contains(range.startContainer)) return { kind: "contenteditable-unreadable" };
+
+    try {
+      const beforeRange = range.cloneRange();
+      beforeRange.selectNodeContents(target);
+      beforeRange.setEnd(range.startContainer, range.startOffset);
+      return {
+        kind: "contenteditable",
+        before: beforeRange.toString().slice(-80),
+        collapsed: selection.isCollapsed
+      };
+    } catch {
+      return { kind: "contenteditable-unreadable" };
+    }
+  }
+
+  return { kind: "unreadable" };
+}
+
+function checkpointMatches(target, checkpoint) {
+  if (!checkpoint) return true;
+
+  if (checkpoint.kind === "docs-text-event-target" || checkpoint.kind === "unreadable" || checkpoint.kind === "contenteditable-unreadable") {
+    return true;
+  }
+
+  const current = captureTypingCheckpoint(target);
+  if (!current || current.kind !== checkpoint.kind) return false;
+
+  if (checkpoint.kind === "text-control") {
+    return current.start === checkpoint.start &&
+      current.end === checkpoint.end &&
+      current.before === checkpoint.before;
+  }
+
+  if (checkpoint.kind === "contenteditable") {
+    return current.before === checkpoint.before &&
+      current.collapsed === checkpoint.collapsed;
+  }
+
+  return true;
+}
+
 function publicState() {
   return {
     status: state.status,
@@ -607,7 +787,9 @@ function publicState() {
     total: state.text.length,
     currentChar: state.currentChar,
     settings: state.settings,
-    lastError: state.lastError
+    lastError: state.lastError,
+    safetyPaused: state.safetyPaused,
+    safetyReason: state.safetyReason
   };
 }
 
