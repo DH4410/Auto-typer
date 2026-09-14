@@ -2,12 +2,9 @@
   "manifest_version": 3,
   "name": "Human Doc Typer",
   "description": "Type user-provided text into Google Docs with human-like pacing, pauses, and typo correction.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "permissions": [
-    "activeTab",
-    "scripting",
-    "sidePanel",
-    "tabs"
+    "sidePanel"
   ],
   "host_permissions": [
     "https://docs.google.com/*"
