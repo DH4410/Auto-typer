@@ -246,7 +246,7 @@ export default function App() {
         <label className={styles.toggleRow}>
           <span>
             <span>Cursor safety guard</span>
-            <small>Always on. Pauses if the document cursor, focus, nearby text, or active tab changes while typing.</small>
+            <small>Always on. Pauses if the document cursor, focus, or nearby text changes. Switching browser tabs does not stop typing.</small>
           </span>
           <input
             type="checkbox"
