@@ -660,12 +660,6 @@ function installSafetyGuards() {
   document.addEventListener("mousedown", pauseForUserInteraction, true);
   document.addEventListener("touchstart", pauseForUserInteraction, true);
   document.addEventListener("keydown", pauseForUserInteraction, true);
-
-  document.addEventListener("visibilitychange", () => {
-    if (state.status === "running" && document.visibilityState === "hidden") {
-      triggerSafetyPause("The Google Docs tab was hidden or changed.");
-    }
-  });
 }
 
 function activeEditableTarget() {
@@ -679,6 +673,14 @@ function validateTypingContext() {
   if (!typingTarget || !typingTarget.isConnected) {
     triggerSafetyPause("The Google Docs typing target changed or was removed.");
     return false;
+  }
+
+  // Switching to another browser tab must not stop an active typing session.
+  // Keep writing to the originally anchored Google Docs target while this tab
+  // is hidden. When the Docs tab becomes visible again, full cursor/text
+  // validation resumes before the next character is typed.
+  if (document.visibilityState === "hidden") {
+    return true;
   }
 
   const active = activeEditableTarget();
