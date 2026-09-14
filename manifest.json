@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Human Doc Typer",
   "description": "Type user-provided text into Google Docs with human-like pacing, pauses, and typo correction.",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "permissions": [
     "sidePanel"
   ],
@@ -10,7 +10,12 @@
     "https://docs.google.com/*"
   ],
   "action": {
-    "default_title": "Human Doc Typer"
+    "default_title": "Human Doc Typer",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   },
   "background": {
     "service_worker": "background.js",
@@ -30,5 +35,10 @@
       "run_at": "document_idle",
       "all_frames": true
     }
-  ]
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
 }
