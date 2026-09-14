@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync } from "node:fs";
+import { copyFileSync, cpSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
@@ -14,6 +14,8 @@ function copyExtensionFiles() {
       for (const file of files) {
         copyFileSync(resolve(file), resolve(outDir, file));
       }
+
+      cpSync(resolve("icons"), resolve(outDir, "icons"), { recursive: true });
     }
   };
 }
