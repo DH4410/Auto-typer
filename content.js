@@ -94,7 +94,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 async function startTyping(payload = {}) {
-  const text = String(payload.text ?? "");
+  const text = String(payload.text ?? "").replace(/\r\n?/g, "\n");
   if (!text.trim()) {
     state.lastError = "Add text before starting.";
     sendStatus(state.lastError);
@@ -136,7 +136,7 @@ async function runTypingLoop(taskId) {
     await waitWhilePausedOrStopped(taskId);
     if (state.status !== "running" || taskId !== state.taskId) break;
 
-    const char = state.text[state.index];
+    const char = nextCharacter(state.text, state.index);
     state.currentChar = char;
 
     if (shouldMakeTypo(char)) {
@@ -145,7 +145,7 @@ async function runTypingLoop(taskId) {
       await typeCharacter(char);
     }
 
-    state.index += 1;
+    state.index += char.length;
     sendStatus("Running");
 
     if (shouldDoFalseStart(char)) {
@@ -296,6 +296,8 @@ async function typeCharacter(char) {
     dispatchKey(target, "Enter", {
       code: "Enter",
       keyCode: 13,
+      charCode: 13,
+      shiftKey: false,
       inputType: "insertParagraph",
       data: "\n"
     });
@@ -303,9 +305,9 @@ async function typeCharacter(char) {
     return;
   }
 
+  const keyInfo = keyboardInfoForChar(char);
   dispatchKey(target, char, {
-    code: codeForChar(char),
-    keyCode: keyCodeForChar(char),
+    ...keyInfo,
     inputType: "insertText",
     data: char
   });
@@ -340,21 +342,40 @@ async function pressBackspace() {
 }
 
 function dispatchKey(target, key, options) {
-  const keyboardBase = {
+  const modifierState = {
+    shiftKey: Boolean(options.shiftKey),
+    ctrlKey: false,
+    altKey: false,
+    metaKey: false
+  };
+
+  const keydownBase = {
     key,
-    code: options.code,
-    keyCode: options.keyCode,
-    which: options.keyCode,
+    code: options.code || "",
+    keyCode: options.keyCode || 0,
+    which: options.keyCode || 0,
+    ...modifierState,
     bubbles: true,
     cancelable: true,
     composed: true
   };
 
-  // Browser-created events cannot be truly trusted. Google Docs may ignore some
-  // synthetic events, so this sequence is paired with editable-target fallbacks.
-  target.dispatchEvent(new KeyboardEvent("keydown", keyboardBase));
-  if (key.length === 1 || key === "Enter") {
-    target.dispatchEvent(new KeyboardEvent("keypress", keyboardBase));
+  // keydown/keyup use the physical key code, while keypress uses the actual
+  // character code. Google Docs relies on this distinction for lowercase
+  // letters and shifted punctuation.
+  target.dispatchEvent(new KeyboardEvent("keydown", keydownBase));
+
+  if (key === "Enter" || key.length === 1) {
+    const charCode = options.charCode ?? (key.length === 1 ? key.charCodeAt(0) : options.keyCode || 0);
+    target.dispatchEvent(new KeyboardEvent("keypress", {
+      ...keydownBase,
+      keyCode: charCode,
+      which: charCode,
+      charCode
+    }));
+  }
+
+  if (options.inputType === "insertText" || options.inputType === "insertParagraph") {
     target.dispatchEvent(new InputEvent("beforeinput", {
       bubbles: true,
       cancelable: true,
@@ -363,7 +384,8 @@ function dispatchKey(target, key, options) {
       data: options.data
     }));
   }
-  target.dispatchEvent(new KeyboardEvent("keyup", keyboardBase));
+
+  target.dispatchEvent(new KeyboardEvent("keyup", keydownBase));
 }
 
 function applyText(target, text, inputType) {
@@ -486,17 +508,96 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
-function keyCodeForChar(char) {
-  if (char === "\n") return 13;
-  const upper = char.toUpperCase();
-  return upper.length === 1 ? upper.charCodeAt(0) : 0;
+function nextCharacter(text, index) {
+  const codePoint = text.codePointAt(index);
+  return codePoint === undefined ? "" : String.fromCodePoint(codePoint);
 }
 
-function codeForChar(char) {
-  if (/^[a-z]$/i.test(char)) return `Key${char.toUpperCase()}`;
-  if (/^[0-9]$/.test(char)) return `Digit${char}`;
-  if (char === " ") return "Space";
-  return "";
+function keyboardInfoForChar(char) {
+  if (/^[a-z]$/.test(char)) {
+    return {
+      code: `Key${char.toUpperCase()}`,
+      keyCode: char.toUpperCase().charCodeAt(0),
+      charCode: char.charCodeAt(0),
+      shiftKey: false
+    };
+  }
+
+  if (/^[A-Z]$/.test(char)) {
+    return {
+      code: `Key${char}`,
+      keyCode: char.charCodeAt(0),
+      charCode: char.charCodeAt(0),
+      shiftKey: true
+    };
+  }
+
+  if (/^[0-9]$/.test(char)) {
+    return {
+      code: `Digit${char}`,
+      keyCode: char.charCodeAt(0),
+      charCode: char.charCodeAt(0),
+      shiftKey: false
+    };
+  }
+
+  if (char === " ") {
+    return { code: "Space", keyCode: 32, charCode: 32, shiftKey: false };
+  }
+
+  const punctuation = {
+    "`": ["Backquote", 192, false],
+    "~": ["Backquote", 192, true],
+    "-": ["Minus", 189, false],
+    "_": ["Minus", 189, true],
+    "=": ["Equal", 187, false],
+    "+": ["Equal", 187, true],
+    "[": ["BracketLeft", 219, false],
+    "{": ["BracketLeft", 219, true],
+    "]": ["BracketRight", 221, false],
+    "}": ["BracketRight", 221, true],
+    "\\": ["Backslash", 220, false],
+    "|": ["Backslash", 220, true],
+    ";": ["Semicolon", 186, false],
+    ":": ["Semicolon", 186, true],
+    "'": ["Quote", 222, false],
+    "\"": ["Quote", 222, true],
+    ",": ["Comma", 188, false],
+    "<": ["Comma", 188, true],
+    ".": ["Period", 190, false],
+    ">": ["Period", 190, true],
+    "/": ["Slash", 191, false],
+    "?": ["Slash", 191, true],
+    "!": ["Digit1", 49, true],
+    "@": ["Digit2", 50, true],
+    "#": ["Digit3", 51, true],
+    "$": ["Digit4", 52, true],
+    "%": ["Digit5", 53, true],
+    "^": ["Digit6", 54, true],
+    "&": ["Digit7", 55, true],
+    "*": ["Digit8", 56, true],
+    "(": ["Digit9", 57, true],
+    ")": ["Digit0", 48, true]
+  };
+
+  const mapped = punctuation[char];
+  if (mapped) {
+    return {
+      code: mapped[0],
+      keyCode: mapped[1],
+      charCode: char.charCodeAt(0),
+      shiftKey: mapped[2]
+    };
+  }
+
+  // Non-ASCII text (accented letters, currency symbols, CJK, emoji, etc.)
+  // is inserted using its exact InputEvent data.
+  return {
+    code: "",
+    keyCode: char.length === 1 ? char.charCodeAt(0) : 0,
+    charCode: char.length === 1 ? char.charCodeAt(0) : 0,
+    shiftKey: false
+  };
 }
 
 function publicState() {
