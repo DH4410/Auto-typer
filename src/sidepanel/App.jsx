@@ -243,6 +243,19 @@ export default function App() {
             onChange={(event) => updateSetting("handsFreeControls", event.target.checked)}
           />
         </label>
+        <label className={styles.toggleRow}>
+          <span>
+            <span>Cursor safety guard</span>
+            <small>Always on. Pauses if the document cursor, focus, nearby text, or active tab changes while typing.</small>
+          </span>
+          <input
+            type="checkbox"
+            checked
+            disabled
+            readOnly
+            aria-label="Cursor safety guard is always on"
+          />
+        </label>
       </section>
 
       {notice && <p className={styles.notice}>{notice}</p>}
